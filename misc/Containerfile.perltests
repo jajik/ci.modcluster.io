@@ -1,0 +1,53 @@
+FROM ubuntu:latest AS builder
+
+RUN apt-get update && apt-get install gcc cmake make apache2 apache2-dev libapr1 libapr1-dev -y
+
+COPY ./native /native
+
+RUN ls -la .
+
+WORKDIR /native
+
+RUN rm -rf /native/build/* || mkdir -p /native/build
+
+WORKDIR /native/build
+
+RUN cmake .. && make
+
+
+FROM ubuntu:latest
+
+ENV APACHE_RUN_DIR=/etc/apache2/
+ENV APACHE_LOG_DIR=/etc/apache2/
+ENV APACHE_RUN_USER=ubuntu
+ENV APACHE_RUN_GROUP=ubuntu
+ENV APACHE_PID_FILE=/etc/apache2/apache2.pid
+ENV APACHE_LOCK_DIR=/etc/apache2/
+
+
+RUN apt-get update && apt-get install gcc make perl cpanminus libcrypt-ssleay-perl apache2 -y
+
+RUN sed -i 's|#ServerRoot "/etc/apache2"|ServerRoot "/etc/apache2"|g' /etc/apache2/apache2.conf
+
+RUN a2enmod cgid actions rewrite proxy proxy_http proxy_hcheck slotmem_shm
+
+RUN cpanm --force Apache::Test Apache::TestMM HTTP::Request LWP::UserAgent
+
+COPY --chown=ubuntu:ubuntu ./test-perl /test-perl
+
+COPY --from=builder --chown=ubuntu:ubuntu /native/build/modules /test-perl/t/modules/
+
+WORKDIR /test-perl
+
+RUN perl Makefile.PL -httpd /usr/sbin/apache2 -httpd_conf /etc/apache2/apache2.conf
+
+RUN make
+
+RUN chown -R :ubuntu /etc/apache2
+
+USER ubuntu
+
+# so that if we run it with custom CMD, we can easily find the test command later
+RUN echo "t/TEST -httpd /usr/sbin/apache2 -httpd_conf /etc/apache2/apache2.conf" > ~/.bash_history
+
+CMD [ "t/TEST", "-httpd", "/usr/sbin/apache2", "-httpd_conf", "/etc/apache2/apache2.conf" ]
